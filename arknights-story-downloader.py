@@ -65,7 +65,8 @@ def get_response(url: str) -> requests.Response:
             with warn_lock:
                 if time.time() - last_warn > 10:
                     last_warn = time.time()
-                    print("网络连接出现问题，正在尝试重新连接……")
+                    with print_lock:
+                        print("网络连接出现问题，正在尝试重新连接……")
         else:
             return response
 
@@ -208,8 +209,8 @@ def worker():
                 operation_text = parse_story_code(operation_code)
                 story_text += f"## {operation}\n\n{operation_text}"
 
-        with open(os.path.join(story_type, f"明日方舟{story_type}（{story}）.md"), 'w') as f:
-            f.write(story_text.strip())
+        with open(os.path.join(story_type, f"明日方舟{story_type}（{story}）.md"), 'w') as file:
+            file.write(story_text.strip())
 
         with print_lock:
             print(f"下载完成：{' '.join(task[:2])}")
@@ -226,6 +227,7 @@ if __name__ == "__main__":
     print("加载中……")
     last_warn = time.time()
     warn_lock = threading.Lock()
+    print_lock = threading.Lock()
 
     # 获取主线与活动及对应 URL
     main_story_urls, event_story_urls = {}, {}
@@ -309,7 +311,6 @@ if __name__ == "__main__":
     for choice in operator_choices:
         tasks.put(("干员资料", choice, operator_urls[choice]))
 
-    print_lock = threading.Lock()
     for _ in range(THREAD_AMOUNT):
         tasks.put(None)
         threading.Thread(target=worker).start()
