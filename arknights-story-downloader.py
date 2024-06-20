@@ -2,11 +2,11 @@ import json
 import os
 import queue
 import re
-import requests
 import threading
 import time
 import urllib.parse
 
+import requests
 from lxml import etree
 
 
