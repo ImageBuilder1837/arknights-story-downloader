@@ -82,4 +82,4 @@ $ python arknights-story-downloader.py
 请输入选项对应的数字：
 ```
 
-在主选择界面输入 5 可开始下载所有已选剧情，剧情将被下载到项目文件夹并保存为 markdown 格式。
+在主选择界面输入 5 可开始下载所有已选剧情，剧情将被下载到 downloads 文件夹并保存为 markdown 格式。

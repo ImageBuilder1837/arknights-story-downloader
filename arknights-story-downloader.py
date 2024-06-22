@@ -61,7 +61,7 @@ def get_response(url: str) -> requests.Response:
     while True:
         try:
             response = requests.get(url)
-        except:
+        except requests.RequestException:
             with warn_lock:
                 if time.time() - last_warn > 10:
                     last_warn = time.time()
@@ -209,7 +209,10 @@ def worker():
                 operation_text = parse_story_code(operation_code)
                 story_text += f"## {operation}\n\n{operation_text}"
 
-        with open(os.path.join(story_type, f"明日方舟{story_type}（{story}）.md"), 'w') as file:
+        story_type_dir = os.path.join("downloads", story_type)
+        if not os.path.isdir(story_type_dir):
+            os.makedirs(story_type_dir)
+        with open(os.path.join(story_type_dir, f"明日方舟{story_type}（{story}）.md"), 'w') as file:
             file.write(story_text.strip())
 
         with print_lock:
