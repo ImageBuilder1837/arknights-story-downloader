@@ -1,13 +1,17 @@
+import asyncio
 import json
 import os
-import queue
 import re
-import threading
 import time
 import urllib.parse
 
-import requests
+import aiohttp
 from lxml import etree
+
+
+BASE_URL = "https://prts.wiki/"
+BASE_URL_W = "https://prts.wiki/w/"
+ELITES = ["Pith", "Sharp", "Stormeye", "Touch", "郁金香"]
 
 
 def extract_operator_archive_text(operator_html) -> str:
@@ -46,7 +50,8 @@ def extract_operator_module_text(operator_html) -> str:
 
     operator_module_text = ""
     for i in range(1, len(modules)):
-        paragraphs = operator_html.xpath(f"//div[@id='mw-customcollapsible-module-{i+1}']/div[@id='mw-customcollapsible-module-{i+1}']/text()")
+        paragraphs = operator_html.xpath(
+            f"//div[@id='mw-customcollapsible-module-{i+1}']/div[@id='mw-customcollapsible-module-{i+1}']/text()")
         module_text = f"### {modules[i]}\n\n"
         for paragraph in paragraphs:
             paragraph = paragraph.strip()
@@ -54,21 +59,6 @@ def extract_operator_module_text(operator_html) -> str:
                 module_text += paragraph + '\n\n'
         operator_module_text += module_text
     return operator_module_text
-
-
-def get_response(url: str) -> requests.Response:
-    global last_warn
-    while True:
-        try:
-            response = requests.get(url)
-        except requests.RequestException:
-            with warn_lock:
-                if time.time() - last_warn > 10:
-                    last_warn = time.time()
-                    with print_lock:
-                        print("网络连接出现问题，正在尝试重新连接……")
-        else:
-            return response
 
 
 def get_story_choices(kind: str, stories: dict, story_choices: list):
@@ -185,57 +175,69 @@ def remove_html_tag(input_string: str) -> str:
     return output_string
 
 
-def worker():
-    while task := tasks.get():
-        with print_lock:
-            print(f"正在下载：{' '.join(task[:2])}")
+async def download_story(story_type: str, story: str, story_urls: dict):
+    print(f"正在下载：{story_type} {story}")
+    story_text = f"# {story}\n\n"
+    if story_type == "干员资料":
+        operator_html = etree.HTML(await fetch(story_urls[story]))  # type: ignore
+        operator_archive_text = extract_operator_archive_text(operator_html)
+        story_text += f"## 干员档案\n\n{operator_archive_text}"
+        operator_voice_text = extract_operator_voice_text(operator_html)
+        story_text += f"## 语音记录\n\n{operator_voice_text}"
+        operator_module_text = extract_operator_module_text(operator_html)
+        story_text += f"## 模组文案\n\n{operator_module_text}"
+    else:
+        for operation in story_urls:
+            operation_html = etree.HTML(await fetch(story_urls[operation]))  # type: ignore
+            operation_code = operation_html.xpath("//*[@id='datas_txt']")[0].text
+            operation_text = parse_story_code(operation_code)
+            story_text += f"## {operation}\n\n{operation_text}"
 
-        story_type, story, story_urls = task
-        story_text = f"# {story}\n\n"
-        if story_type == "干员资料":
-            response = get_response(story_urls[story])
-            operator_html = etree.HTML(response.text)  # type: ignore
-            operator_archive_text = extract_operator_archive_text(operator_html)
-            story_text += f"## 干员档案\n\n{operator_archive_text}"
-            operator_voice_text = extract_operator_voice_text(operator_html)
-            story_text += f"## 语音记录\n\n{operator_voice_text}"
-            operator_module_text = extract_operator_module_text(operator_html)
-            story_text += f"## 模组文案\n\n{operator_module_text}"
-        else:
-            for operation in story_urls:
-                response = get_response(story_urls[operation])
-                operation_html = etree.HTML(response.text)  # type: ignore
-                operation_code = operation_html.xpath("//*[@id='datas_txt']")[0].text
-                operation_text = parse_story_code(operation_code)
-                story_text += f"## {operation}\n\n{operation_text}"
+    story_type_dir = os.path.join("downloads", story_type)
+    if not os.path.isdir(story_type_dir):
+        os.makedirs(story_type_dir)
+    with open(os.path.join(story_type_dir, f"明日方舟{story_type}（{story}）.md"), 'w') as f:
+        f.write(story_text.strip())
 
-        story_type_dir = os.path.join("downloads", story_type)
-        if not os.path.isdir(story_type_dir):
-            os.makedirs(story_type_dir)
-        with open(os.path.join(story_type_dir, f"明日方舟{story_type}（{story}）.md"), 'w') as file:
-            file.write(story_text.strip())
-
-        with print_lock:
-            print(f"下载完成：{' '.join(task[:2])}")
-        tasks.task_done()
-    tasks.task_done()
+    print(f"下载完成：{story_type} {story}")
 
 
-if __name__ == "__main__":
-    BASE_URL = "https://prts.wiki/"
-    BASE_URL_W = "https://prts.wiki/w/"
-    ELITES = ["Pith", "Sharp", "Stormeye", "Touch", "郁金香"]
-    THREAD_AMOUNT = 16
+async def fetch(url: str) -> str:
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    return await response.text()
+        except aiohttp.ClientError:
+            if hasattr(fetch, "last_warn") and time.time() - fetch.last_warn < 10:
+                continue
+            fetch.last_warn = time.time()
+            print("网络连接出现问题，正在尝试重新连接……")
 
-    print("加载中……")
-    last_warn = time.time()
-    warn_lock = threading.Lock()
-    print_lock = threading.Lock()
 
-    # 获取主线与活动及对应 URL
+async def get_operators():
+    operator_urls = {}
+    operator_view = etree.HTML(await fetch("https://prts.wiki/w/干员一览"))  # type: ignore
+    for operator in operator_view.xpath("//*[@id='filter-data']/div/@data-zh") + ELITES:
+        operator_urls[operator] = {operator: urllib.parse.urljoin(BASE_URL_W, operator)}
+    return operator_urls
+
+
+async def get_records():
+    operator_record_urls = {}
+    operator_record_view = json.loads(await fetch(
+        "https://prts.wiki/api.php?action=cargoquery&format=json&tables=char_memory&limit=500&fields=_pageName=page,elite,level,favor,storySetName,storyIntro,storyTxt,storyIndex,medal"))
+    for json_piece in operator_record_view["cargoquery"]:
+        operator = json_piece["title"]["page"]
+        record = json_piece["title"]["storySetName"]
+        operator_record_urls.setdefault(operator, {})[record] = urllib.parse.urljoin(
+            BASE_URL_W, json_piece["title"]["storyTxt"])
+    return operator_record_urls
+
+
+async def get_stories():
     main_story_urls, event_story_urls = {}, {}
-    response = get_response("https://prts.wiki/w/剧情一览")
-    story_view = etree.HTML(response.text)  # type: ignore
+    story_view = etree.HTML(await fetch("https://prts.wiki/w/剧情一览"))  # type: ignore
     main_story_view, event_story_view = story_view.xpath("//*[@id='mw-content-text']/div/table")
 
     tr_tags = main_story_view.find('tbody').findall('tr')
@@ -249,7 +251,6 @@ if __name__ == "__main__":
     tr_tags = event_story_view.find('tbody').findall('tr')
     special_story_amount = int(tr_tags[1].find('th').get("rowspan"))
     integrated_strategy_amount = int(tr_tags[1 + special_story_amount].find('th').get("rowspan"))
-    reclamation_algorithm_amount = int(tr_tags[1 + special_story_amount + integrated_strategy_amount].find('th').get("rowspan"))
     for i in range(1, len(tr_tags)):  # 第一行是“活动剧情一览”
         tr_tag = tr_tags[i]
         if i in (1 + special_story_amount, 1 + special_story_amount + integrated_strategy_amount):
@@ -262,27 +263,25 @@ if __name__ == "__main__":
         for a_tag in tr_tag.find('td').findall('a'):
             operation = a_tag.text
             event_story_urls[chapter][operation] = urllib.parse.urljoin(BASE_URL, a_tag.get("href"))
+    return main_story_urls, event_story_urls
 
-    # 获取干员密录及对应的 URL
-    operator_record_urls = {}
-    response = get_response("https://prts.wiki/api.php?action=cargoquery&format=json&tables=char_memory&limit=500&fields=_pageName=page,elite,level,favor,storySetName,storyIntro,storyTxt,storyIndex,medal")
-    operator_record_view = json.loads(response.text)
-    for json_piece in operator_record_view["cargoquery"]:
-        operator = json_piece["title"]["page"]
-        record = json_piece["title"]["storySetName"]
-        operator_record_urls.setdefault(operator, {})[record] = urllib.parse.urljoin(BASE_URL_W, json_piece["title"]["storyTxt"])
 
-    # 获取干员及对应 URL
-    operator_urls = {}
-    response = get_response("https://prts.wiki/w/干员一览")
-    operator_view = etree.HTML(response.text)  # type: ignore
-    for operator in operator_view.xpath("//*[@id='filter-data']/div/@data-zh") + ELITES:
-        operator_urls[operator] = {operator: urllib.parse.urljoin(BASE_URL_W, operator)}
+async def main():
+    print("加载中……")
 
-    # 主选择界面
+    story_urls, operator_record_urls, operator_urls = await asyncio.gather(
+        get_stories(), get_records(), get_operators())
+    main_story_urls, event_story_urls = story_urls
+
     main_story_choices, event_story_choices, operator_record_choices, operator_choices = [], [], [], []
     while True:
-        print("\n选择需要下载的剧情类型：\n1：主线剧情\n2：活动剧情\n3：干员密录\n4：干员资料\n5：开始下载\n6：退出程序")
+        print("\n选择需要下载的剧情类型：")
+        print("1：主线剧情")
+        print("2：活动剧情")
+        print("3：干员密录")
+        print("4：干员资料")
+        print("5：开始下载")
+        print("6：退出程序")
         user_input = input("请输入选项对应的数字：").strip()
         match user_input:
             case '1':
@@ -304,19 +303,19 @@ if __name__ == "__main__":
             case _:
                 print(f"无此选项：{user_input}")
 
-    tasks = queue.Queue()
+    tasks = []
     for choice in main_story_choices:
-        tasks.put(("主线剧情", choice, main_story_urls[choice]))
+        tasks.append(download_story("主线剧情", choice, main_story_urls[choice]))
     for choice in event_story_choices:
-        tasks.put(("活动剧情", choice, event_story_urls[choice]))
+        tasks.append(download_story("活动剧情", choice, event_story_urls[choice]))
     for choice in operator_record_choices:
-        tasks.put(("干员密录", choice, operator_record_urls[choice]))
+        tasks.append(download_story("干员密录", choice, operator_record_urls[choice]))
     for choice in operator_choices:
-        tasks.put(("干员资料", choice, operator_urls[choice]))
+        tasks.append(download_story("干员资料", choice, operator_urls[choice]))
 
-    for _ in range(THREAD_AMOUNT):
-        tasks.put(None)
-        threading.Thread(target=worker).start()
-
-    tasks.join()
+    await asyncio.gather(*tasks)
     print("\n下载任务已全部完成")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
