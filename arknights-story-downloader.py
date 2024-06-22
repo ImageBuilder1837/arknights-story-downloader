@@ -63,7 +63,7 @@ def extract_operator_module_text(operator_html) -> str:
 
 def get_story_choices(kind: str, stories: dict, story_choices: list):
     while True:
-        print(f"\n已选择的{kind}：{'，'.join(story_choices)}")
+        print(f"\n选择需要下载的{kind}：")
         print(f"（输入 ls 查看所有可选择的{kind}，输入 all 选择或取消选择所有可选择的{kind}，空输入回到主选择界面）")
         user_input = input(f"请输入需要选择或取消选择的{kind}（用全角逗号'，'隔开）：").strip()
         match user_input:
@@ -72,8 +72,6 @@ def get_story_choices(kind: str, stories: dict, story_choices: list):
                 continue
             case 'all':
                 user_choices = stories.keys()
-            case '':
-                break
             case _:
                 user_choices = user_input.split('，')
         for choice in user_choices:
@@ -82,8 +80,11 @@ def get_story_choices(kind: str, stories: dict, story_choices: list):
                     story_choices.remove(choice)
                 else:
                     story_choices.append(choice)
-            else:
-                print(f"无此选项：{choice}")
+            elif choice:
+                print(f"\n无此选项：{choice}")
+
+        print(f"\n已选择的{kind}：{'，'.join(story_choices)}")
+        break
 
 
 def parse_story_code(story_code: str):
@@ -301,7 +302,7 @@ async def main():
             case '6':
                 exit(0)
             case _:
-                print(f"无此选项：{user_input}")
+                print(f"\n无此选项：{user_input}")
 
     tasks = []
     for choice in main_story_choices:
