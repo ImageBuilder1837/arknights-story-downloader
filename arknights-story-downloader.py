@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 
@@ -12,11 +13,23 @@ from lxml import etree
 
 BASE_URL = "https://prts.wiki/"
 BASE_URL_W = "https://prts.wiki/w/"
+DIALOG_SEP = "---"
 ELITES = ["Pith", "Sharp", "Stormeye", "Touch", "郁金香"]
+LINE_SEP = '\n\n'
+
+LINE_FEED = re.compile(r'((\\r)?\\n)+')
+CONVERSATION = re.compile(r'\[name="(.*)".*\](.*)', re.I)
+DECISION = re.compile(r'\[decision\(.*options="(.*)".*values="(.*)".*\)\]', re.I)
+DIALOG = re.compile(r'\[dialog\]', re.I)
+MULTILINE = re.compile(r'\[multiline\(name="(.*)".*\)\](.*)', re.I)
+PREDICATE = re.compile(r'\[predicate\(.*references="(.*)".*\)\]', re.I)
+STICKER = re.compile(r'\[sticker\(.*text="(.*?)".*\)\]', re.I)
+SUBTITLE = re.compile(r'\[subtitle\(.*text="(.*?)".*\)\]', re.I)
+DEMAND = re.compile(r'(\[.*\])|(\{\{.*)|(\}\})')
 
 
-def extract_operator_archive_text(operator_html) -> str:
-    operator_archive_text = ""
+def extract_archive_text(operator_html) -> str:
+    lines = []
     archive_span = operator_html.xpath("//*[@id='干员档案']")[0]
     archive_table = archive_span.getparent().getnext().getnext()
     tr_tags = archive_table.find('tbody').findall('tr')
@@ -24,42 +37,41 @@ def extract_operator_archive_text(operator_html) -> str:
         title = tr_tags[i].find('th').find('div').findtext('p').strip()
         condition = tr_tags[i + 1].find('th').findtext('small').strip()
         paragraphs = tr_tags[i + 2].find('td').find('div').itertext()
-        archive_text = f"### {title}\n\n*{condition}*\n\n"
+        lines.append(f"### {title}")
+        lines.append(f"*{condition}*")
         for paragraph in paragraphs:
             paragraph = paragraph.strip()
             if paragraph:  # 部分 paragraph 为空行
-                archive_text += paragraph + '\n\n'
-        operator_archive_text += archive_text
-    return operator_archive_text
+                lines.append(paragraph)
+    return LINE_SEP.join(lines)
 
 
-def extract_operator_voice_text(operator_html) -> str:
-    titles = operator_html.xpath("//div[@id='voice-data-root']/div/@data-title")
-    voices = operator_html.xpath("//div[@id='voice-data-root']/div/div[@data-kind-name='中文']/text()")
-
-    operator_voice_text = ""
-    for title, voice in zip(titles, voices):
-        voice_text = f"### {title}\n\n{voice}\n\n"
-        operator_voice_text += voice_text
-    return operator_voice_text
-
-
-def extract_operator_module_text(operator_html) -> str:
+def extract_module_text(operator_html) -> str:
     modules = operator_html.xpath("//h3/span[@class='mw-headline']/text()")
     if not modules:
         return "该干员暂无模组"
 
-    operator_module_text = ""
+    lines = []
     for i in range(1, len(modules)):
         paragraphs = operator_html.xpath(
             f"//div[@id='mw-customcollapsible-module-{i+1}']/div[@id='mw-customcollapsible-module-{i+1}']/text()")
-        module_text = f"### {modules[i]}\n\n"
+        lines.append(f"### {modules[i]}")
         for paragraph in paragraphs:
             paragraph = paragraph.strip()
             if paragraph:  # 部分 paragraph 为空行
-                module_text += paragraph + '\n\n'
-        operator_module_text += module_text
-    return operator_module_text
+                lines.append(paragraph)
+    return LINE_SEP.join(lines)
+
+
+def extract_voice_text(operator_html) -> str:
+    titles = operator_html.xpath("//div[@id='voice-data-root']/div/@data-title")
+    voices = operator_html.xpath("//div[@id='voice-data-root']/div/div[@data-kind-name='中文']/text()")
+
+    lines = []
+    for title, voice in zip(titles, voices):
+        lines.append(f"### {title}")
+        lines.append(voice)
+    return LINE_SEP.join(lines)
 
 
 def get_story_choices(kind: str, stories: dict, story_choices: list):
@@ -88,119 +100,86 @@ def get_story_choices(kind: str, stories: dict, story_choices: list):
         break
 
 
-def parse_story_code(story_code: str):
-    CONVERSATION = re.compile(r'\[name="(.*)".*\](.*)', re.I)
-    DECISION = re.compile(r'\[decision\(.*options="(.*)".*values="(.*)".*\)\]', re.I)
-    DEMAND = re.compile(r'(\[.*\])|(\{\{.*)|(\}\})')
-    DIALOG = re.compile(r'\[dialog\]', re.I)
-    DIALOG_SEP = "---\n\n"
-    LINE_SEP = re.compile(r'((\\r)?\\n)+')
-    MULTILINE = re.compile(r'\[multiline\(name="(.*)"(\s*,\s*end=(true))?\)\](.*)', re.I)
-    PREDICATE = re.compile(r'\[predicate\(.*references="(.*)".*\)\]', re.I)
-    STICKER = re.compile(r'\[sticker\(.*text="(.*?)".*\)\]', re.I)
-    SUBTITLE = re.compile(r'\[subtitle\(.*text="(.*?)".*\)\]', re.I)
-
-    story_text = ""
-    lines = story_code.split("\n")
-    last_line = DIALOG_SEP
+def parse_story_code(story_code: str) -> str:
+    lines = []
+    codes = story_code.split("\n")
     is_multi = False
-    for line in lines:
-        line = re.sub(LINE_SEP, ' ', remove_html_tag(line.strip()))
-        if result := MULTILINE.match(line):
-            groups = result.groups()
-            name, is_end, sentence = groups[0], bool(groups[2]), groups[3]
-            sentence = sentence.strip()  # 部分 sentence 有空格前后缀
+    for code in codes:
+        code = re.sub(LINE_FEED, ' ', remove_html_tag(code.strip()))
+        if result := MULTILINE.match(code):
+            name, sentence = map(str.strip, result.groups())  # 部分 sentence 有空格前后缀
             if name and sentence:  # 部分 multiline 为空行
-                if not is_multi:
+                if is_multi:
+                    if lines and lines[-1].startswith(f"**{name}**"):
+                        lines.append(lines.pop() + sentence)
+                    else:
+                        lines.append(f"**{name}**：{sentence}")
+                else:
                     is_multi = True
-                    last_line = f"**{name}**："
-                last_line += sentence
-                if is_end:
-                    is_multi = False
-                    last_line += '\n\n'
-                    story_text += last_line
-                continue
-        elif is_multi:  # 部分 multiline 结束句无 end 标识
-            is_multi = False
-            last_line += '\n\n'
-            story_text += last_line
-
-        if result := CONVERSATION.match(line):
-            name, sentence = result.groups()
-            sentence = sentence.strip()  # 部分 sentence 有空格前后缀
-            if name and sentence:  # 部分 conversation 为空行
-                last_line = f"**{name}**：{sentence}\n\n"
-                story_text += last_line
-        elif result := DECISION.match(line):
-            last_line = ""
-            for option, value in zip(*map(lambda string: string.split(';'), result.groups())):
-                last_line += f"选项 {value}：{option}\n\n"
-            story_text += last_line
-        elif result := DIALOG.match(line):
-            if last_line != DIALOG_SEP:
-                last_line = DIALOG_SEP
-                story_text += last_line
-        elif result := PREDICATE.match(line):
-            num = result.group(1)
-            last_line = f"选项 {num} 对应剧情：\n\n"
-            story_text += last_line
-        elif result := STICKER.match(line):
-            sentence = result.group(1)
-            sentence = sentence.strip()  # 部分 sentence 有空格前后缀
-            if sentence:  # 部分 sticker 为空行
-                last_line = f"**居中淡入文本**：{sentence}\n\n"
-                story_text += last_line
-        elif result := SUBTITLE.match(line):
-            sentence = result.group(1)
-            sentence = sentence.strip()  # 部分 sentence 有空格前后缀
-            if sentence:  # 部分 subtitle 为空行
-                last_line = f"**居中显示文本**：{sentence}\n\n"
-                story_text += last_line
-        elif DEMAND.match(line) or line.startswith('//'):
+                    lines.append(f"**{name}**：{sentence}")
             continue
-        elif line:
-            last_line = line + '\n\n'
-            story_text += last_line
-    return story_text
+        elif is_multi:
+            is_multi = False
+
+        if result := CONVERSATION.match(code):
+            name, sentence = map(str.strip, result.groups())  # 部分 sentence 有空格前后缀
+            if name and sentence:  # 部分 conversation 为空行
+                lines.append(f"**{name}**：{sentence}")
+        elif result := DECISION.match(code):
+            lines.append('\n'.join(f"选项 {value}：{option}" for option, value in 
+                                   zip(*map(lambda string: string.split(';'), result.groups()))))
+        elif result := DIALOG.match(code):
+            if lines and lines[-1] != DIALOG_SEP:
+                lines.append(DIALOG_SEP)
+        elif result := PREDICATE.match(code):
+            lines.append(f"选项 {result.group(1)} 对应剧情：")
+        elif result := STICKER.match(code):
+            sentence = result.group(1).strip()  # 部分 sentence 有空格前后缀
+            if sentence:  # 部分 sticker 为空行
+                lines.append(f"**居中淡入文本**：{sentence}")
+        elif result := SUBTITLE.match(code):
+            sentence = result.group(1).strip()  # 部分 sentence 有空格前后缀
+            if sentence:  # 部分 subtitle 为空行
+                lines.append(f"**居中显示文本**：{sentence}")
+        elif DEMAND.match(code) or code.startswith('//'):
+            continue
+        elif code:
+            lines.append(code)
+    return LINE_SEP.join(lines)
 
 
-def remove_html_tag(input_string: str) -> str:
-    stack, output_string = [], ""
-    for char in input_string:
+def remove_html_tag(string: str) -> str:
+    stack, string_out = [], ""
+    for char in string:
         if char == '<':
             stack.append(char)
         elif char == '>':
             stack.pop()
         elif not stack:
-            output_string += char
+            string_out += char
     assert not stack
-    return output_string
+    return string_out
 
 
 async def download_story(story_type: str, story: str, story_urls: dict):
     print(f"正在下载：{story_type} {story}")
-    story_text = f"# {story}\n\n"
-    if story_type == "干员资料":
-        operator_html = etree.HTML(await fetch(story_urls[story]))  # type: ignore
-        operator_archive_text = extract_operator_archive_text(operator_html)
-        story_text += f"## 干员档案\n\n{operator_archive_text}"
-        operator_voice_text = extract_operator_voice_text(operator_html)
-        story_text += f"## 语音记录\n\n{operator_voice_text}"
-        operator_module_text = extract_operator_module_text(operator_html)
-        story_text += f"## 模组文案\n\n{operator_module_text}"
-    else:
-        for operation in story_urls:
-            operation_html = etree.HTML(await fetch(story_urls[operation]))  # type: ignore
-            operation_code = operation_html.xpath("//*[@id='datas_txt']")[0].text
-            operation_text = parse_story_code(operation_code)
-            story_text += f"## {operation}\n\n{operation_text}"
-
     story_type_dir = os.path.join("downloads", story_type)
-    story_file_name = f"明日方舟{story_type}（{story}）.md"
     if not os.path.isdir(story_type_dir):
         os.makedirs(story_type_dir)
+
+    story_file_name = f"明日方舟{story_type}（{story}）.md"
     async with aiofiles.open(os.path.join(story_type_dir, story_file_name), 'w') as f:
-        await f.write(story_text.strip())
+        await f.write(f"# {story}{LINE_SEP}")
+        if story_type == "干员资料":
+            operator_html = etree.HTML(await fetch(story_urls[story]))  # type: ignore
+            await f.write(f"## 干员档案{LINE_SEP}{extract_archive_text(operator_html)}{LINE_SEP}")
+            await f.write(f"## 语音记录{LINE_SEP}{extract_voice_text(operator_html)}{LINE_SEP}")
+            await f.write(f"## 模组文案{LINE_SEP}{extract_module_text(operator_html)}{LINE_SEP}")
+        else:
+            for operation in story_urls:
+                operation_html = etree.HTML(await fetch(story_urls[operation]))  # type: ignore
+                operation_code = operation_html.xpath("//*[@id='datas_txt']")[0].text
+                await f.write(f"## {operation}{LINE_SEP}{parse_story_code(operation_code)}{LINE_SEP}")
 
     print(f"下载完成：{story_type} {story}")
 
@@ -218,7 +197,7 @@ async def fetch(url: str) -> str:
             print("网络连接出现问题，正在尝试重新连接……")
 
 
-async def get_operators():
+async def get_operators() -> dict:
     operator_urls = {}
     operator_view = etree.HTML(await fetch("https://prts.wiki/w/干员一览"))  # type: ignore
     for operator in operator_view.xpath("//*[@id='filter-data']/div/@data-zh") + ELITES:
@@ -226,10 +205,10 @@ async def get_operators():
     return operator_urls
 
 
-async def get_records():
+async def get_records() -> dict:
     operator_record_urls = {}
     operator_record_view = json.loads(await fetch(
-        "https://prts.wiki/api.php?action=cargoquery&format=json&tables=char_memory&limit=500&fields=_pageName=page,elite,level,favor,storySetName,storyIntro,storyTxt,storyIndex,medal"))
+        "https://prts.wiki/api.php?action=cargoquery&format=json&tables=char_memory&limit=500&fields=_pageName=page,storySetName,storyTxt"))
     for json_piece in operator_record_view["cargoquery"]:
         operator = json_piece["title"]["page"]
         record = json_piece["title"]["storySetName"]
@@ -238,7 +217,7 @@ async def get_records():
     return operator_record_urls
 
 
-async def get_stories():
+async def get_stories() -> tuple[dict, dict]:
     main_story_urls, event_story_urls = {}, {}
     story_view = etree.HTML(await fetch("https://prts.wiki/w/剧情一览"))  # type: ignore
     main_story_view, event_story_view = story_view.xpath("//*[@id='mw-content-text']/div/table")
@@ -271,7 +250,6 @@ async def get_stories():
 
 async def main():
     print("加载中……")
-
     story_urls, operator_record_urls, operator_urls = await asyncio.gather(
         get_stories(), get_records(), get_operators())
     main_story_urls, event_story_urls = story_urls
@@ -302,7 +280,7 @@ async def main():
                 print(f"已选择的干员资料：{'，'.join(operator_choices)}\n")
                 break
             case '6':
-                exit(0)
+                sys.exit(0)
             case _:
                 print(f"\n无此选项：{user_input}")
 
