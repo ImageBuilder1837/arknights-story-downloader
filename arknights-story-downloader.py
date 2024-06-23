@@ -16,6 +16,12 @@ BASE_URL_W = "https://prts.wiki/w/"
 DIALOG_SEP = "---"
 ELITES = ["Pith", "Sharp", "Stormeye", "Touch", "郁金香"]
 LINE_SEP = '\n\n'
+COOKIES = {
+    "ak_akToken": "",
+    "ak_akUserID": "",
+    "ak_akUserName": "",
+    "ak_ak_session": "",
+}
 
 LINE_FEED = re.compile(r'((\\r)?\\n)+')
 CONVERSATION = re.compile(r'\[name="(.*)".*\](.*)', re.I)
@@ -187,7 +193,7 @@ async def download_story(story_type: str, story: str, story_urls: dict):
 async def fetch(url: str) -> str:
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(cookies=COOKIES) as session:
                 async with session.get(url) as response:
                     return await response.text()
         except aiohttp.ClientError:
