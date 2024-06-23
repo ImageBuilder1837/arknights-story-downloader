@@ -168,7 +168,6 @@ def remove_html_tag(string: str) -> str:
 
 
 async def download_story(story_type: str, story: str, story_urls: dict):
-    print(f"正在下载：{story_type} {story}")
     story_type_dir = os.path.join("downloads", story_type)
     if not os.path.isdir(story_type_dir):
         os.makedirs(story_type_dir)
@@ -300,6 +299,7 @@ async def main():
     for choice in operator_choices:
         tasks.append(download_story("干员资料", choice, operator_urls[choice]))
 
+    print("下载任务已全部启动\n")
     await asyncio.gather(*tasks)
     print("\n下载任务已全部完成")
 
