@@ -5,6 +5,7 @@ import re
 import time
 import urllib.parse
 
+import aiofiles
 import aiohttp
 from lxml import etree
 
@@ -195,10 +196,11 @@ async def download_story(story_type: str, story: str, story_urls: dict):
             story_text += f"## {operation}\n\n{operation_text}"
 
     story_type_dir = os.path.join("downloads", story_type)
+    story_file_name = f"明日方舟{story_type}（{story}）.md"
     if not os.path.isdir(story_type_dir):
         os.makedirs(story_type_dir)
-    with open(os.path.join(story_type_dir, f"明日方舟{story_type}（{story}）.md"), 'w') as f:
-        f.write(story_text.strip())
+    async with aiofiles.open(os.path.join(story_type_dir, story_file_name), 'w') as f:
+        await f.write(story_text.strip())
 
     print(f"下载完成：{story_type} {story}")
 
