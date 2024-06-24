@@ -289,18 +289,17 @@ async def main():
             case _:
                 print(f"\n无此选项：{user_input}")
 
-    tasks = []
-    for choice in main_story_choices:
-        tasks.append(download_story("主线剧情", choice, main_story_urls[choice]))
-    for choice in event_story_choices:
-        tasks.append(download_story("活动剧情", choice, event_story_urls[choice]))
-    for choice in operator_record_choices:
-        tasks.append(download_story("干员密录", choice, operator_record_urls[choice]))
-    for choice in operator_choices:
-        tasks.append(download_story("干员资料", choice, operator_urls[choice]))
+    async with asyncio.TaskGroup() as group:
+        for choice in main_story_choices:
+            group.create_task(download_story("主线剧情", choice, main_story_urls[choice]))
+        for choice in event_story_choices:
+            group.create_task(download_story("活动剧情", choice, event_story_urls[choice]))
+        for choice in operator_record_choices:
+            group.create_task(download_story("干员密录", choice, operator_record_urls[choice]))
+        for choice in operator_choices:
+            group.create_task(download_story("干员资料", choice, operator_urls[choice]))
+        print("下载任务已全部启动\n")
 
-    print("下载任务已全部启动\n")
-    await asyncio.gather(*tasks)
     print("\n下载任务已全部完成")
 
 
